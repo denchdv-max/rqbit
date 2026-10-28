@@ -28,6 +28,7 @@ use librqbit::{
 use librqbit_dualstack_sockets::TcpListener;
 use parking_lot::RwLock;
 use serde::Serialize;
+use tauri::Manager;
 use tracing::{debug_span, error, info, warn};
 
 struct StateShared {
@@ -415,6 +416,44 @@ fn get_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
+/// Adds the .torrent files and magnet links found in `args`, e.g. when the user double-clicks
+/// a .torrent file in the file manager. Relative paths are resolved against `cwd`.
+async fn add_torrents_from_args(api: Api, cwd: &Path, args: Vec<String>) {
+    for arg in args {
+        let add = if arg.starts_with("magnet:") {
+            AddTorrent::Url(arg.clone().into())
+        } else if arg.to_ascii_lowercase().ends_with(".torrent") {
+            let path = cwd.join(&arg);
+            match tokio::fs::read(&path).await {
+                Ok(bytes) => AddTorrent::TorrentFileBytes(bytes.into()),
+                Err(e) => {
+                    error!(?path, "error reading torrent file: {e:#}");
+                    continue;
+                }
+            }
+        } else {
+            continue;
+        };
+        match api.api_add_torrent(add, None).await {
+            Ok(_) => info!(%arg, "added torrent from command line"),
+            Err(e) => error!(%arg, "error adding torrent from command line: {e:#}"),
+        }
+    }
+}
+
+fn add_torrents_from_args_in_background(app: &tauri::AppHandle, cwd: String, args: Vec<String>) {
+    let api = match app.state::<State>().api() {
+        Ok(api) => api,
+        Err(_) => {
+            warn!("rqbit is not configured yet, ignoring torrents passed on the command line");
+            return;
+        }
+    };
+    tauri::async_runtime::spawn(async move {
+        add_torrents_from_args(api, Path::new(&cwd), args).await;
+    });
+}
+
 async fn start() {
     tauri::async_runtime::set(tokio::runtime::Handle::current());
     let init_logging_result = init_logging(InitLoggingOptions {
@@ -433,8 +472,31 @@ async fn start() {
     let state = State::new(init_logging_result).await;
 
     tauri::Builder::default()
+        // Must be the first plugin. A second launch (e.g. double-clicking a .torrent file)
+        // would otherwise try to bind the same ports as the running instance and fail.
+        // Instead, it exits immediately and hands its arguments to the running instance.
+        .plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            add_torrents_from_args_in_background(app, cwd, args.into_iter().skip(1).collect());
+        }))
         .plugin(tauri_plugin_shell::init())
         .manage(state)
+        .setup(|app| {
+            // Torrents passed to the very first launch.
+            let cwd = std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            add_torrents_from_args_in_background(
+                app.handle(),
+                cwd,
+                std::env::args().skip(1).collect(),
+            );
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             config_change,
             config_current,

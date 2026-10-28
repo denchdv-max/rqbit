@@ -37,6 +37,7 @@ serde_with.workspace = true
 parking_lot.workspace = true
 gethostname.workspace = true
 tauri-plugin-shell.workspace = true
+tauri-plugin-single-instance.workspace = true
 metrics-exporter-prometheus.workspace = true
 librqbit-dualstack-sockets.workspace = true
 
