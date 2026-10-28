@@ -150,6 +150,7 @@ pub struct Session {
     _disable_upload: bool,
     pub ipv4_only: bool,
     pub peer_limit: Option<usize>,
+    pub(crate) on_complete: OnCompleteAction,
     client_name_and_version: String,
 }
 
@@ -422,6 +423,31 @@ impl Default for DhtSessionConfig {
     }
 }
 
+/// What to do with a torrent automatically once it has finished downloading
+/// (i.e. all selected files are complete).
+///
+/// Removing a finished torrent stops seeding, which saves upload traffic, CPU and battery.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OnCompleteAction {
+    /// Leave the torrent in the session (it keeps seeding). This is the default.
+    #[default]
+    Keep,
+    /// Remove the torrent from the session, but keep the downloaded files on disk.
+    Forget,
+    /// Remove the torrent from the session AND delete the downloaded files.
+    DeleteFiles,
+}
+
+impl OnCompleteAction {
+    pub(crate) fn delete_files(self) -> Option<bool> {
+        match self {
+            OnCompleteAction::Keep => None,
+            OnCompleteAction::Forget => Some(false),
+            OnCompleteAction::DeleteFiles => Some(true),
+        }
+    }
+}
+
 pub struct SessionOptions {
     /// DHT configuration. Set to None to disable DHT entirely.
     /// Defaults to DHT enabled with persistence.
@@ -474,6 +500,10 @@ pub struct SessionOptions {
     /// Default peer limit per torrent.
     pub peer_limit: Option<usize>,
 
+    /// What to do with each torrent once it finishes downloading.
+    /// Defaults to [`OnCompleteAction::Keep`].
+    pub on_complete: OnCompleteAction,
+
     #[cfg(feature = "disable-upload")]
     pub disable_upload: bool,
 
@@ -509,6 +539,7 @@ impl Default for SessionOptions {
             allowlist_url: None,
             trackers: HashSet::new(),
             peer_limit: None,
+            on_complete: OnCompleteAction::Keep,
             #[cfg(feature = "disable-upload")]
             disable_upload: false,
             disable_local_service_discovery: false,
@@ -812,6 +843,7 @@ impl Session {
                 trackers: opts.trackers,
                 disable_trackers: opts.disable_trackers,
                 peer_limit: opts.peer_limit,
+                on_complete: opts.on_complete,
                 client_name_and_version,
 
                 #[cfg(feature = "disable-upload")]

@@ -14,7 +14,8 @@ use clap_complete::Shell;
 use librqbit::{
     AddTorrent, AddTorrentOptions, AddTorrentResponse, Api, ConnectionOptions,
     CreateTorrentOptions, DhtSessionConfig, ListOnlyResponse, ListenerMode, ListenerOptions,
-    PeerConnectionOptions, Session, SessionOptions, SessionPersistenceConfig, TorrentStatsState,
+    OnCompleteAction, PeerConnectionOptions, Session, SessionOptions, SessionPersistenceConfig,
+    TorrentStatsState,
     dht::DhtPersistenceConfig,
     http_api::{HttpApi, HttpApiOptions},
     librqbit_spawn,
@@ -27,6 +28,26 @@ use mdns_sd::{DaemonEvent, ServiceDaemon, ServiceInfo};
 use size_format::SizeFormatterBinary as SF;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, debug_span, error, info, trace_span, warn};
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum OnCompleteArg {
+    /// Keep the torrent in rqbit and keep seeding.
+    Keep,
+    /// Remove the torrent from rqbit (stop seeding), keep the files.
+    Forget,
+    /// Remove the torrent from rqbit and delete the downloaded files.
+    DeleteFiles,
+}
+
+impl From<OnCompleteArg> for OnCompleteAction {
+    fn from(a: OnCompleteArg) -> Self {
+        match a {
+            OnCompleteArg::Keep => OnCompleteAction::Keep,
+            OnCompleteArg::Forget => OnCompleteAction::Forget,
+            OnCompleteArg::DeleteFiles => OnCompleteAction::DeleteFiles,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum LogLevel {
@@ -262,6 +283,18 @@ struct Opts {
     #[cfg(feature = "disable-upload")]
     #[arg(long, env = "RQBIT_DISABLE_UPLOAD")]
     disable_upload: bool,
+
+    /// What to do with a torrent once it finishes downloading.
+    /// "forget" removes it from rqbit (stops seeding) but keeps the files on disk.
+    /// "delete-files" removes it AND deletes the downloaded files.
+    /// Useful on laptops to save upload traffic and battery.
+    #[arg(
+        long = "on-complete",
+        env = "RQBIT_ON_COMPLETE",
+        value_enum,
+        default_value_t = OnCompleteArg::Keep
+    )]
+    on_complete: OnCompleteArg,
 
     /// Limit download speed to bytes-per-second.
     #[arg(long = "ratelimit-download", env = "RQBIT_RATELIMIT_DOWNLOAD")]
@@ -688,6 +721,7 @@ async fn async_main(mut opts: Opts, cancel: CancellationToken) -> anyhow::Result
         disable_trackers: opts.disable_trackers,
         trackers,
         peer_limit: opts.peer_limit,
+        on_complete: opts.on_complete.into(),
         runtime_worker_threads: Some(opts.max_blocking_threads as usize),
         ipv4_only: opts.ipv4_only,
         client_name_and_version: None,

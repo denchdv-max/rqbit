@@ -766,10 +766,15 @@ impl TorrentStateLive {
     }
 
     pub async fn wait_until_completed(&self) {
+        // Register for the notification BEFORE checking the state, otherwise a completion
+        // that happens between the check and the registration would be missed forever.
+        let notified = self.finished_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
         if self.is_finished() {
             return;
         }
-        self.finished_notify.notified().await;
+        notified.await;
     }
 
     pub fn pause(&self) -> anyhow::Result<TorrentStatePaused> {

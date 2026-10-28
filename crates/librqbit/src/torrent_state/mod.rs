@@ -34,10 +34,12 @@ use tokio_stream::StreamExt;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 use tracing::debug_span;
+use tracing::info;
 use tracing::trace;
 use tracing::warn;
 
 use crate::Session;
+use crate::api::TorrentIdOrHash;
 use crate::chunk_tracker::ChunkTracker;
 use crate::file_info::FileInfo;
 use crate::limits::LimitsConfig;
@@ -426,6 +428,9 @@ impl ManagedTorrent {
                     if let Some(peer_rx) = peer_rx {
                         spawn_peer_adder(&live, peer_rx);
                     }
+                    if let Some(delete_files) = session.on_complete.delete_files() {
+                        spawn_on_complete_watcher(t, &live, &session, delete_files);
+                    }
                     Ok(())
                 }
                 ManagedTorrentState::Error(_) => {
@@ -677,6 +682,48 @@ fn spawn_fatal_errors_receiver(
                 );
             }
             Ok(())
+        },
+    );
+}
+
+/// Removes the torrent from the session as soon as it finishes downloading.
+///
+/// The watcher belongs to the live state, so it disappears on pause/delete and doesn't poll:
+/// it just sleeps on a notification.
+fn spawn_on_complete_watcher(
+    t: &Arc<ManagedTorrent>,
+    live: &Arc<TorrentStateLive>,
+    session: &Arc<Session>,
+    delete_files: bool,
+) {
+    let id = t.id();
+    let span = t.shared().span.clone();
+    live.spawn(
+        debug_span!(parent: span.clone(), "on_complete_watcher"),
+        format!("[{id}]on_complete_watcher"),
+        {
+            let live = live.clone();
+            let session = session.clone();
+            async move {
+                live.wait_until_completed().await;
+                info!(
+                    id,
+                    delete_files, "torrent finished, removing it from the session"
+                );
+                // Deleting pauses the torrent, which cancels every task owned by the live
+                // state (including this one). So the deletion runs as a session-level task.
+                session.clone().spawn(
+                    debug_span!(parent: span, "on_complete_delete"),
+                    format!("[{id}]on_complete_delete"),
+                    async move {
+                        session
+                            .delete(TorrentIdOrHash::Id(id), delete_files)
+                            .await
+                            .context("error removing finished torrent")
+                    },
+                );
+                Ok(())
+            }
         },
     );
 }
