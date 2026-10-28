@@ -1,0 +1,39 @@
+name: Build desktop installer for Windows (manual)
+
+# Run it from the "Actions" tab: pick this workflow, press "Run workflow".
+# The installer (.msi) is attached to the finished run as an artifact.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      - name: install Tauri
+        run: cargo binstall tauri-cli --no-confirm
+
+      - name: npm install (desktop)
+        working-directory: desktop
+        run: npm install
+
+      - name: npm install (librqbit/webui)
+        working-directory: crates/librqbit/webui
+        run: npm install
+
+      - name: cargo tauri build
+        working-directory: desktop
+        run: cargo tauri build --ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rqbit-desktop-windows-msi
+          path: target/release/bundle/msi/*.msi
+          if-no-files-found: error
